@@ -1980,7 +1980,11 @@
 
                 // ── AUTHENTICATION ────────────────────────────────────
                 initGoogleIdentity() {
-                    if (!this.googleClientId || typeof google === 'undefined' || !google.accounts || !google.accounts.id) return;
+                    if (!this.googleClientId) return;
+                    if (typeof google === 'undefined' || !google.accounts || !google.accounts.id) {
+                        setTimeout(() => this.initGoogleIdentity(), 300);
+                        return;
+                    }
                     try {
                         google.accounts.id.initialize({
                             client_id: this.googleClientId,
@@ -1995,7 +1999,7 @@
                                 theme: 'outline',
                                 size: 'large',
                                 shape: 'pill',
-                                width: '100%',
+                                width: 280,
                                 text: 'continue_with'
                             });
                         }
