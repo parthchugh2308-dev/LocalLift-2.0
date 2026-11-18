@@ -246,7 +246,12 @@
 
                 <!-- Mode: Options -->
                 <div x-show="loginMode === 'options'" class="flex flex-col gap-3.5">
-                    <button @click="loginWithGoogle()" class="w-full bg-white hover:bg-rose-50 text-slate-700 font-bold py-3.5 px-4 rounded-2xl border-2 border-rose-100 flex items-center justify-center gap-3 active:scale-95 transition shadow-sm">
+                    <!-- Google GIS Main Button Container -->
+                    <div x-show="googleConfigured" id="googleGisBtnMain" class="w-full flex justify-center min-h-[44px]"></div>
+
+                    <!-- Continue with Google Trigger / Fallback Button -->
+                    <button @click="loginWithGoogle()" 
+                            class="w-full bg-white hover:bg-rose-50 text-slate-700 font-bold py-3.5 px-4 rounded-2xl border-2 border-rose-100 flex items-center justify-center gap-3 active:scale-95 transition shadow-sm">
                         <i class="fa-brands fa-google text-red-500 text-lg"></i>
                         Continue with Google
                     </button>
@@ -1937,6 +1942,9 @@
                             const gData = await gRes.json();
                             this.googleConfigured = !!(gData.configured && gData.client_id);
                             this.googleClientId = gData.client_id || '';
+                            if (this.googleConfigured) {
+                                this.initGoogleIdentity();
+                            }
                         }
                     } catch(e) {
                         console.warn('Google auth config notice:', e);
@@ -1992,14 +2000,24 @@
                             auto_select: false,
                             cancel_on_tap_outside: true
                         });
-                        const btnContainer = document.getElementById('googleGisBtn');
-                        if (btnContainer) {
-                            btnContainer.innerHTML = '';
-                            google.accounts.id.renderButton(btnContainer, {
+                        const mainBtn = document.getElementById('googleGisBtnMain');
+                        if (mainBtn && !mainBtn.hasChildNodes()) {
+                            google.accounts.id.renderButton(mainBtn, {
                                 theme: 'outline',
                                 size: 'large',
-                                shape: 'pill',
-                                width: 280,
+                                shape: 'rectangular',
+                                width: 340,
+                                text: 'continue_with'
+                            });
+                        }
+                        const modalBtn = document.getElementById('googleGisBtn');
+                        if (modalBtn) {
+                            modalBtn.innerHTML = '';
+                            google.accounts.id.renderButton(modalBtn, {
+                                theme: 'outline',
+                                size: 'large',
+                                shape: 'rectangular',
+                                width: 320,
                                 text: 'continue_with'
                             });
                         }
@@ -2011,9 +2029,12 @@
                 loginWithGoogle() {
                     this.googleModalOpen = true;
                     this.$nextTick(() => {
-                        if (this.googleConfigured && typeof google !== 'undefined' && google.accounts && google.accounts.id) {
-                            this.initGoogleIdentity();
-                        }
+                        this.initGoogleIdentity();
+                        try {
+                            if (typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+                                google.accounts.id.prompt();
+                            }
+                        } catch(e) {}
                     });
                 },
 
@@ -2941,12 +2962,14 @@
                     </div>
                 </template>
             </div>
+        </div>
+
         <!-- ================= GOOGLE AUTHENTICATION MODAL ================= -->
         <div x-show="googleModalOpen" 
              x-transition.opacity.duration.300ms
              class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
              @click.self="googleModalOpen = false"
-             style="display: none;">
+             x-cloak>
             
             <div class="w-full max-w-md bg-white rounded-3xl p-6 shadow-2xl border border-rose-100 relative text-left">
                 <!-- Close Button -->
