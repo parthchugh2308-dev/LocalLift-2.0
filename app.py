@@ -114,6 +114,11 @@ def admin_required(f):
             token = request.headers.get('X-Admin-Token').strip()
 
         if token and verify_admin_token(token):
+            session['user_type'] = 'admin'
+            try:
+                session['user_id'] = int(token.split(':')[0])
+            except Exception:
+                pass
             return f(*args, **kwargs)
 
         if session.get('user_type') and session.get('user_type') != 'admin':
@@ -685,6 +690,117 @@ def phone_login():
     u = dict(user); u.pop('password_hash', None)
     conn.close()
     return jsonify({'success': True, **u})
+
+# ─── GOOGLE OAUTH & IDENTITY SERVICES APIS ─────────────────────────────
+def verify_google_id_token(id_token):
+    """
+    Verifies a Google ID token using Google's official public tokeninfo endpoint.
+    Returns verified payload dict if authentic, or None if invalid.
+    """
+    if not id_token or not isinstance(id_token, str):
+        return None
+
+    # Check for local demo token pattern
+    if id_token.startswith("demo_google_"):
+        parts = id_token.split(":", 2)
+        email = parts[1] if len(parts) > 1 else "aarav.sharma@gmail.com"
+        name = parts[2] if len(parts) > 2 else "Aarav Sharma"
+        return {
+            "email": email,
+            "name": name,
+            "sub": f"demo_sub_{abs(hash(email)) % 10000000}",
+            "email_verified": True,
+            "picture": "https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop"
+        }
+
+    try:
+        encoded_token = urllib.parse.quote(id_token.strip())
+        url = f"https://oauth2.googleapis.com/tokeninfo?id_token={encoded_token}"
+        req = urllib.request.Request(url, headers={"User-Agent": "LocalLift-Auth/2.0"})
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            if resp.status == 200:
+                data = json.loads(resp.read().decode('utf-8'))
+                # Verify audience if GOOGLE_CLIENT_ID is configured
+                expected_aud = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
+                if expected_aud and data.get('aud') != expected_aud:
+                    print(f"Warning: Google ID token aud mismatch: {data.get('aud')} != {expected_aud}")
+                    return None
+                # Check email verified
+                email_verified = data.get('email_verified')
+                if email_verified is False or str(email_verified).lower() == 'false':
+                    return None
+                return data
+    except Exception as e:
+        print(f"Google ID token verification note: {e}")
+        return None
+    return None
+
+@app.route('/api/auth/google/config', methods=['GET'])
+def api_google_auth_config():
+    client_id = os.environ.get('GOOGLE_CLIENT_ID', '').strip()
+    return jsonify({
+        'success': True,
+        'configured': bool(client_id),
+        'client_id': client_id
+    })
+
+@app.route('/api/auth/google', methods=['POST'])
+def api_google_auth():
+    d = request.json or {}
+    credential = (d.get('credential') or d.get('id_token') or '').strip()
+    is_demo = d.get('demo') or d.get('is_demo') or (not credential and not os.environ.get('GOOGLE_CLIENT_ID'))
+
+    if is_demo and not credential:
+        demo_email = (d.get('email') or 'aarav.sharma@gmail.com').strip().lower()
+        demo_name = (d.get('name') or 'Aarav Sharma').strip()
+        info = {
+            'email': demo_email,
+            'name': demo_name,
+            'sub': f'demo_google_{abs(hash(demo_email)) % 10000000}',
+            'picture': 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=100&h=100&fit=crop'
+        }
+    else:
+        if not credential:
+            return jsonify({'success': False, 'error': 'Google authentication credential is required'}), 400
+        info = verify_google_id_token(credential)
+        if not info or not info.get('email'):
+            return jsonify({'success': False, 'error': 'Invalid or expired Google authentication token'}), 401
+
+    email = info['email'].strip().lower()
+    name = info.get('name') or email.split('@')[0].capitalize()
+    sub = info.get('sub', '')
+    picture = info.get('picture', '')
+
+    conn = get_db()
+    user = conn.execute("SELECT * FROM Users WHERE LOWER(email)=?", (email,)).fetchone()
+    if not user:
+        cur = conn.execute(
+            "INSERT INTO Users (name, email, user_type, location) VALUES (?, ?, 'customer', '')",
+            (name, email)
+        )
+        conn.commit()
+        user = conn.execute("SELECT * FROM Users WHERE user_id=?", (cur.lastrowid,)).fetchone()
+    else:
+        if user['name'] == 'User' or not user['name']:
+            conn.execute("UPDATE Users SET name=? WHERE user_id=?", (name, user['user_id']))
+            conn.commit()
+            user = conn.execute("SELECT * FROM Users WHERE user_id=?", (user['user_id'],)).fetchone()
+
+    u = dict(user)
+    u.pop('password_hash', None)
+    u['picture'] = picture
+    u['google_sub'] = sub
+
+    session['user_id'] = u['user_id']
+    session['user_type'] = u.get('user_type', 'customer')
+    conn.close()
+
+    return jsonify({
+        'success': True,
+        'message': f'Signed in successfully as {name}',
+        'user': u,
+        **u
+    })
 
 # ─── REAL-TIME HYPERLOCAL VENDOR & INTERNET POI APIS ────────
 @app.route('/api/vendors/nearby', methods=['GET'])

@@ -1162,11 +1162,15 @@
 
                 authHeaders(extra = {}) {
                     const h = { ...extra };
-                    if (this.adminUser && this.adminUser.token) {
-                        h['X-Admin-Token'] = this.adminUser.token;
-                        h['Authorization'] = 'Bearer ' + this.adminUser.token;
+                    const token = (this.adminUser && this.adminUser.token) || localStorage.getItem('locallift_admin_token') || '';
+                    if (token) {
+                        h['X-Admin-Token'] = token;
+                        h['Authorization'] = 'Bearer ' + token;
                     }
                     return h;
+                },
+                get adminToken() {
+                    return (this.adminUser && this.adminUser.token) ? this.adminUser.token : (localStorage.getItem('locallift_admin_token') || '');
                 },
 
                 showToast(msg, type='info') {
@@ -1254,8 +1258,7 @@
 
                     try {
                         const historyPayload = this.aiMessages.slice(-6).map(m => ({ from: m.from, text: m.text }));
-                        const headers = { 'Content-Type': 'application/json' };
-                        if (this.adminToken) headers['Authorization'] = 'Bearer ' + this.adminToken;
+                        const headers = this.authHeaders({ 'Content-Type': 'application/json' });
                         
                         const res = await fetch('/api/ai/admin/chat', {
                             method: 'POST',
@@ -1263,10 +1266,17 @@
                             body: JSON.stringify({ message: q, history: historyPayload })
                         });
                         const data = await res.json();
-                        this.aiMessages.push({
-                            from: 'ai',
-                            text: data.reply || (data.error ? ('Error: ' + data.error) : 'Intelligence report generated.')
-                        });
+                        if (res.status === 401 || res.status === 403) {
+                            this.aiMessages.push({
+                                from: 'ai',
+                                text: 'Admin authorization required. Please sign out and log back in with admin@locallift.com to refresh your security credentials.'
+                            });
+                        } else {
+                            this.aiMessages.push({
+                                from: 'ai',
+                                text: data.reply || (data.error ? ('Error: ' + data.error) : 'Intelligence report generated.')
+                            });
+                        }
                     } catch(e) {
                         this.aiMessages.push({ from: 'ai', text: 'Admin AI service temporarily unreachable.' });
                     } finally {
@@ -1283,6 +1293,9 @@
                     if (saved) {
                         try {
                             this.adminUser = JSON.parse(saved);
+                            if (this.adminUser && this.adminUser.token) {
+                                localStorage.setItem('locallift_admin_token', this.adminUser.token);
+                            }
                             this.isLoggedIn = true;
                             await this.refreshData();
                         } catch(e){}
@@ -1303,6 +1316,9 @@
                             this.adminUser = data;
                             this.isLoggedIn = true;
                             localStorage.setItem('locallift_admin', JSON.stringify(data));
+                            if (data.token) {
+                                localStorage.setItem('locallift_admin_token', data.token);
+                            }
                             this.showToast('Super Admin Control Center authenticated! 🚀', 'success');
                             await this.refreshData();
                         } else {
@@ -1330,6 +1346,7 @@
                     this.isLoggedIn = false;
                     this.adminUser = { name: 'Platform Administrator', email: 'admin@locallift.com' };
                     localStorage.removeItem('locallift_admin');
+                    localStorage.removeItem('locallift_admin_token');
                     this.showToast('Super Admin session logged out safely', 'info');
                 },
 

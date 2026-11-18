@@ -65,6 +65,9 @@
     <!-- Alpine.js -->
     <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 
+    <!-- Google Identity Services (GIS) -->
+    <script src="https://accounts.google.com/gsi/client" async defer></script>
+
     <style>
         body {
             font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
@@ -1595,6 +1598,12 @@
                 manualQuery: '',
                 mapListMode: 'map', // 'map' or 'list'
 
+                // Google Identity Services State
+                googleClientId: '',
+                googleConfigured: false,
+                googleLoading: false,
+                googleModalOpen: false,
+
                 // User & Location State
                 currentUser: { name: 'Local Customer', phone: '+91 9876543210' },
                 userLat: 28.6139,
@@ -1921,6 +1930,18 @@
                         try { this.favorites = JSON.parse(savedFavs); } catch(e){}
                     }
 
+                    // Query Google Identity configuration
+                    try {
+                        const gRes = await fetch('/api/auth/google/config');
+                        if (gRes.ok) {
+                            const gData = await gRes.json();
+                            this.googleConfigured = !!(gData.configured && gData.client_id);
+                            this.googleClientId = gData.client_id || '';
+                        }
+                    } catch(e) {
+                        console.warn('Google auth config notice:', e);
+                    }
+
                     setTimeout(async () => {
                         if (savedUser && savedLoc) {
                             await this.fetchHyperlocalData();
@@ -1958,11 +1979,96 @@
                 },
 
                 // ── AUTHENTICATION ────────────────────────────────────
+                initGoogleIdentity() {
+                    if (!this.googleClientId || typeof google === 'undefined' || !google.accounts || !google.accounts.id) return;
+                    try {
+                        google.accounts.id.initialize({
+                            client_id: this.googleClientId,
+                            callback: (response) => this.handleGoogleCredentialResponse(response),
+                            auto_select: false,
+                            cancel_on_tap_outside: true
+                        });
+                        const btnContainer = document.getElementById('googleGisBtn');
+                        if (btnContainer) {
+                            btnContainer.innerHTML = '';
+                            google.accounts.id.renderButton(btnContainer, {
+                                theme: 'outline',
+                                size: 'large',
+                                shape: 'pill',
+                                width: '100%',
+                                text: 'continue_with'
+                            });
+                        }
+                    } catch (err) {
+                        console.error('GIS init error:', err);
+                    }
+                },
+
                 loginWithGoogle() {
-                    this.currentUser = { name: 'Google Customer', email: 'user@gmail.com', user_type: 'customer' };
-                    localStorage.setItem('locallift_user', JSON.stringify(this.currentUser));
-                    this.showToast('Signed in successfully with Google! 🎉', 'success');
-                    this.screen = 'location';
+                    this.googleModalOpen = true;
+                    this.$nextTick(() => {
+                        if (this.googleConfigured && typeof google !== 'undefined' && google.accounts && google.accounts.id) {
+                            this.initGoogleIdentity();
+                        }
+                    });
+                },
+
+                async handleGoogleCredentialResponse(response) {
+                    if (!response || !response.credential) {
+                        this.showToast('Google sign-in was cancelled or failed.', 'error');
+                        return;
+                    }
+                    this.googleLoading = true;
+                    try {
+                        const res = await fetch('/api/auth/google', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ credential: response.credential })
+                        });
+                        const data = await res.json();
+                        if (data.success && data.user) {
+                            this.currentUser = data.user;
+                            localStorage.setItem('locallift_user', JSON.stringify(this.currentUser));
+                            this.googleModalOpen = false;
+                            this.showToast(`Signed in as ${data.user.name || data.user.email}! 🎉`, 'success');
+                            this.screen = 'location';
+                        } else {
+                            this.showToast(data.error || 'Google verification failed', 'error');
+                        }
+                    } catch(e) {
+                        this.showToast('Server connection error during Google sign-in', 'error');
+                    } finally {
+                        this.googleLoading = false;
+                    }
+                },
+
+                async loginWithGoogleDemo(accountName = 'Aarav Sharma', accountEmail = 'aarav.sharma@gmail.com') {
+                    this.googleLoading = true;
+                    try {
+                        const res = await fetch('/api/auth/google', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                demo: true,
+                                name: accountName,
+                                email: accountEmail
+                            })
+                        });
+                        const data = await res.json();
+                        if (data.success && data.user) {
+                            this.currentUser = data.user;
+                            localStorage.setItem('locallift_user', JSON.stringify(this.currentUser));
+                            this.googleModalOpen = false;
+                            this.showToast(`Welcome ${data.user.name}! (Verified Google Profile) 🎉`, 'success');
+                            this.screen = 'location';
+                        } else {
+                            this.showToast(data.error || 'Demo Google sign-in failed', 'error');
+                        }
+                    } catch(e) {
+                        this.showToast('Network error during Google sign-in', 'error');
+                    } finally {
+                        this.googleLoading = false;
+                    }
                 },
 
                 sendOtp() {
@@ -2830,6 +2936,118 @@
                         </div>
                     </div>
                 </template>
+            </div>
+        <!-- ================= GOOGLE AUTHENTICATION MODAL ================= -->
+        <div x-show="googleModalOpen" 
+             x-transition.opacity.duration.300ms
+             class="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
+             @click.self="googleModalOpen = false"
+             style="display: none;">
+            
+            <div class="w-full max-w-md bg-white rounded-3xl p-6 shadow-2xl border border-rose-100 relative text-left">
+                <!-- Close Button -->
+                <button @click="googleModalOpen = false" 
+                        class="absolute top-5 right-5 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-700 flex items-center justify-center transition">
+                    <i class="fa-solid fa-xmark text-sm"></i>
+                </button>
+
+                <!-- Header -->
+                <div class="flex items-center gap-3 mb-4">
+                    <div class="w-12 h-12 rounded-2xl bg-white border border-slate-200 shadow-sm flex items-center justify-center text-2xl">
+                        <svg class="w-7 h-7" viewBox="0 0 24 24">
+                            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z"/>
+                            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"/>
+                        </svg>
+                    </div>
+                    <div>
+                        <h3 class="text-xl font-extrabold text-slate-900 font-display">Sign in with Google</h3>
+                        <p class="text-xs font-semibold text-rose-600">Secure Single Sign-On (GIS 2.0)</p>
+                    </div>
+                </div>
+
+                <!-- Live GIS Container (if configured) -->
+                <div x-show="googleConfigured" class="mb-4">
+                    <p class="text-xs text-slate-600 mb-2 font-medium">Click below to continue with your official Google account:</p>
+                    <div id="googleGisBtn" class="flex justify-center my-3 min-h-[44px]"></div>
+                    <div class="relative flex py-2 items-center">
+                        <div class="flex-grow border-t border-slate-200"></div>
+                        <span class="flex-shrink mx-3 text-xs text-slate-400 font-bold uppercase">or instant demo</span>
+                        <div class="flex-grow border-t border-slate-200"></div>
+                    </div>
+                </div>
+
+                <!-- Instant Verified Demo Sign-In Profiles -->
+                <div class="space-y-2 mb-4">
+                    <p class="text-xs font-bold text-slate-500 uppercase tracking-wider">Select Verified Profile</p>
+                    
+                    <button @click="loginWithGoogleDemo('Aarav Sharma', 'aarav.sharma@gmail.com')"
+                            :disabled="googleLoading"
+                            class="w-full flex items-center justify-between p-3 rounded-2xl border-2 border-slate-100 hover:border-rose-300 hover:bg-rose-50/50 transition active:scale-[0.99] text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-full bg-blue-100 text-blue-700 font-black flex items-center justify-center text-sm shadow-inner">
+                                AS
+                            </div>
+                            <div>
+                                <h4 class="text-sm font-bold text-slate-800">Aarav Sharma</h4>
+                                <p class="text-xs text-slate-500 font-medium">aarav.sharma@gmail.com</p>
+                            </div>
+                        </div>
+                        <span class="text-xs font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1">
+                            <i class="fa-solid fa-check text-[10px]"></i> Ready
+                        </span>
+                    </button>
+
+                    <button @click="loginWithGoogleDemo('Priya Sharma', 'priya.sharma@gmail.com')"
+                            :disabled="googleLoading"
+                            class="w-full flex items-center justify-between p-3 rounded-2xl border-2 border-slate-100 hover:border-rose-300 hover:bg-rose-50/50 transition active:scale-[0.99] text-left">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-full bg-purple-100 text-purple-700 font-black flex items-center justify-center text-sm shadow-inner">
+                                PS
+                            </div>
+                            <div>
+                                <h4 class="text-sm font-bold text-slate-800">Priya Sharma</h4>
+                                <p class="text-xs text-slate-500 font-medium">priya.sharma@gmail.com</p>
+                            </div>
+                        </div>
+                        <span class="text-xs font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1">
+                            <i class="fa-solid fa-check text-[10px]"></i> Ready
+                        </span>
+                    </button>
+                </div>
+
+                <!-- Developer Setup Guide Accordion -->
+                <div x-data="{ expanded: false }" class="mt-4 pt-3 border-t border-slate-100">
+                    <button @click="expanded = !expanded" 
+                            class="w-full flex items-center justify-between text-left text-xs font-bold text-slate-500 hover:text-rose-600 transition">
+                        <span class="flex items-center gap-1.5">
+                            <i class="fa-solid fa-sliders text-rose-500"></i>
+                            Google Cloud OAuth Configuration
+                        </span>
+                        <i class="fa-solid text-[10px]" :class="expanded ? 'fa-chevron-up' : 'fa-chevron-down'"></i>
+                    </button>
+
+                    <div x-show="expanded" x-collapse class="mt-3 text-xs text-slate-600 bg-slate-50 rounded-2xl p-4 border border-slate-200 space-y-2.5">
+                        <p class="font-bold text-slate-800">To enable your own production Google Client ID:</p>
+                        <ol class="list-decimal list-inside space-y-1.5 text-slate-600 font-medium leading-relaxed">
+                            <li>Visit <a href="https://console.cloud.google.com/apis/credentials" target="_blank" class="text-rose-600 underline font-semibold">Google Cloud Console</a>.</li>
+                            <li>Create an <strong>OAuth 2.0 Client ID</strong> (Web Application).</li>
+                            <li>Add to Authorized JavaScript Origins:
+                                <code class="block bg-white p-1 rounded border border-slate-200 font-mono text-[10px] my-1">http://localhost:5000</code>
+                                <code class="block bg-white p-1 rounded border border-slate-200 font-mono text-[10px]">https://locallift-2-0.onrender.com</code>
+                            </li>
+                            <li>Set <code class="bg-white px-1 rounded border font-mono">GOOGLE_CLIENT_ID</code> in <code class="bg-white px-1 rounded border font-mono">.env</code> or Render Environment tab.</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <div class="mt-5">
+                    <button @click="googleModalOpen = false" 
+                            class="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 rounded-xl transition text-xs">
+                        Cancel
+                    </button>
+                </div>
             </div>
         </div>
 
